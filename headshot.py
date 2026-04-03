@@ -20,7 +20,7 @@ class HeadshotApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Staff Headshot Processor")
-        self.root.geometry("860x700")
+        self.root.geometry("960x700")
         self.root.resizable(True, True)
         self.root.configure(bg="#f5f5f5")
 
@@ -30,10 +30,17 @@ class HeadshotApp:
         self.size_var = tk.IntVar(value=200)
         self.face_pos_var = tk.IntVar(value=FACE_DEFAULT)
         self.zoom_var = tk.IntVar(value=ZOOM_DEFAULT)
+        self.thumb_var = tk.IntVar(value=120)
         self.status_var = tk.StringVar(value="No images loaded")
         self._debounce_id = None
+        self._ready = False
 
         self._build_ui()
+        # Wait until window is fully drawn before allowing previews to render
+        self.root.after(200, self._on_ready)
+
+    def _on_ready(self):
+        self._ready = True
 
     def _build_ui(self):
         top = tk.Frame(self.root, bg="#1a1a1a", pady=12)
@@ -44,11 +51,30 @@ class HeadshotApp:
         main = tk.Frame(self.root, bg="#f5f5f5")
         main.pack(fill="both", expand=True, padx=14, pady=10)
 
-        left = tk.Frame(main, bg="#ffffff", relief="flat", bd=0,
-                        highlightthickness=1, highlightbackground="#e0e0e0", width=240)
-        left.pack(side="left", fill="y", padx=(0, 10))
-        left.pack_propagate(False)
+        # --- Left panel with scrollable content ---
+        left_outer = tk.Frame(main, bg="#ffffff", relief="flat", bd=0,
+                              highlightthickness=1, highlightbackground="#e0e0e0", width=245)
+        left_outer.pack(side="left", fill="y", padx=(0, 10))
+        left_outer.pack_propagate(False)
 
+        left_canvas = tk.Canvas(left_outer, bg="#ffffff", highlightthickness=0, width=243)
+        left_scroll = ttk.Scrollbar(left_outer, orient="vertical", command=left_canvas.yview)
+        left_canvas.configure(yscrollcommand=left_scroll.set)
+        left_scroll.pack(side="right", fill="y")
+        left_canvas.pack(side="left", fill="both", expand=True)
+
+        left = tk.Frame(left_canvas, bg="#ffffff")
+        left_win = left_canvas.create_window((0, 0), window=left, anchor="nw")
+        left.bind("<Configure>", lambda e: left_canvas.configure(
+            scrollregion=left_canvas.bbox("all")))
+        left_canvas.bind("<Configure>", lambda e: left_canvas.itemconfig(left_win, width=e.width))
+
+        # Mouse wheel scroll on left panel
+        def _left_scroll(e):
+            left_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        left_canvas.bind_all("<MouseWheel>", _left_scroll)
+
+        # --- Controls ---
         self._section(left, "Input")
         tk.Button(left, text="+ Add Images", command=self._add_files,
                   bg="#1a1a1a", fg="white", font=("Segoe UI", 10),
@@ -89,6 +115,9 @@ class HeadshotApp:
                   bg="#f0f0f0", fg="#555", font=("Segoe UI", 9),
                   relief="flat", padx=10, pady=4, cursor="hand2").pack(fill="x", padx=12, pady=(0, 12))
 
+        self._section(left, "Preview Size")
+        self._slider(left, "Thumbnail size", self.thumb_var, 80, 240, "px")
+
         self._section(left, "Output Folder")
         out_frame = tk.Frame(left, bg="#ffffff")
         out_frame.pack(fill="x", padx=12, pady=(0, 4))
@@ -103,8 +132,9 @@ class HeadshotApp:
                   bg="#2563eb", fg="white", font=("Segoe UI", 11, "bold"),
                   relief="flat", padx=10, pady=10, cursor="hand2").pack(fill="x", padx=12, pady=(4, 8))
         self.progress = ttk.Progressbar(left, mode="determinate")
-        self.progress.pack(fill="x", padx=12, pady=(0, 8))
+        self.progress.pack(fill="x", padx=12, pady=(0, 16))
 
+        # --- Right panel ---
         right = tk.Frame(main, bg="#f5f5f5")
         right.pack(side="left", fill="both", expand=True)
 
@@ -125,8 +155,12 @@ class HeadshotApp:
         self.canvas_window = self.canvas.create_window((0, 0), window=self.grid_frame, anchor="nw")
         self.grid_frame.bind("<Configure>", lambda e: self.canvas.configure(
             scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfig(
-            self.canvas_window, width=e.width))
+
+        def on_canvas_resize(e):
+            self.canvas.itemconfig(self.canvas_window, width=e.width)
+            if self._ready:
+                self._debounce_preview()
+        self.canvas.bind("<Configure>", on_canvas_resize)
 
         status_bar = tk.Frame(self.root, bg="#e8e8e8", pady=4)
         status_bar.pack(fill="x", side="bottom")
@@ -151,7 +185,8 @@ class HeadshotApp:
                 val_label.config(text=f"{var.get()/scale:.1f}{unit}")
             else:
                 val_label.config(text=f"{var.get()}{unit}")
-            self._debounce_preview()
+            if self._ready:
+                self._debounce_preview()
 
         tk.Scale(frame, variable=var, from_=mn, to=mx, orient="horizontal",
                  showvalue=False, bg="#ffffff", highlightthickness=0,
@@ -224,7 +259,7 @@ class HeadshotApp:
         return result
 
     def _refresh_previews(self):
-        if not hasattr(self, 'grid_frame'):
+        if not hasattr(self, 'grid_frame') or not self._ready:
             return
         self.previews = []
         for w in self.grid_frame.winfo_children():
@@ -233,8 +268,11 @@ class HeadshotApp:
             self.status_var.set("No images loaded")
             return
 
-        THUMB = 100
-        cols = 4
+        THUMB = self.thumb_var.get()
+        canvas_width = self.canvas.winfo_width()
+        if canvas_width < 10:
+            canvas_width = self.root.winfo_width() - 270
+        cols = max(1, canvas_width // (THUMB + 28))
         face_pct = self.face_pos_var.get()
         zoom = self.zoom_var.get()
 
@@ -253,23 +291,21 @@ class HeadshotApp:
                 img_label.pack(padx=8, pady=(8, 2))
 
                 name = os.path.basename(path)
-                name = name[:16] + "..." if len(name) > 16 else name
+                name = name[:18] + "..." if len(name) > 18 else name
                 tk.Label(card, text=name, font=("Segoe UI", 8), fg="#666",
-                         bg="#ffffff", wraplength=100).pack(padx=4, pady=(0, 2))
+                         bg="#ffffff", wraplength=THUMB).pack(padx=4, pady=(0, 2))
 
                 remove_btn = tk.Label(card, text="x  Remove", font=("Segoe UI", 8),
                                       fg="#cc3333", bg="#ffffff", cursor="hand2")
                 remove_btn.pack(pady=(0, 6))
 
-                # Hover effects on the card
                 def on_enter(e, c=card):
                     c.config(highlightbackground="#cc3333", highlightthickness=2)
                 def on_leave(e, c=card):
                     c.config(highlightbackground="#e0e0e0", highlightthickness=1)
 
-                p = path
                 for widget in (card, img_label, remove_btn):
-                    widget.bind("<Button-1>", lambda e, p=p: self._remove_file(p))
+                    widget.bind("<Button-1>", lambda e, p=path: self._remove_file(p))
                     widget.bind("<Enter>", on_enter)
                     widget.bind("<Leave>", on_leave)
 
