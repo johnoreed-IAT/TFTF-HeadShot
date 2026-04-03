@@ -192,6 +192,8 @@ class HeadshotApp:
         return result
 
     def _refresh_previews(self):
+        if not hasattr(self, 'grid_frame'):
+            return
         self.previews = []
         for w in self.grid_frame.winfo_children():
             w.destroy()
